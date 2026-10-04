@@ -1,0 +1,29 @@
+# Reusable deploy: runs on the production host's self-hosted runner and calls
+# ~/services/deploy.sh there. The caller decides when (needs/if); this only
+# decides how.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Directory name under ~/services on the host
+        required: true
+        type: string
+      host:
+        description: Runner label of the host to deploy on
+        required: false
+        type: string
+        default: bee
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, "${{ inputs.host }}"]
+    concurrency:
+      group: deploy-${{ inputs.host }}
+      cancel-in-progress: false
+    steps:
+      - name: Deploy ${{ inputs.project }} on ${{ inputs.host }}
+        env:
+          PROJECT: ${{ inputs.project }}
+        run: ~/services/deploy.sh "$PROJECT" "$GITHUB_SHA"
