@@ -15,5 +15,5 @@ read -r project commit image want_id extra <<<"${SSH_ORIGINAL_COMMAND:-}"
 
 gunzip | docker load >/dev/null
 got_id=$(docker image inspect --format '{{.Id}}' "$image")
-[ "$got_id" = "$want_id" ] || { echo "image id mismatch: $got_id != $want_id" >&2; exit 1; }
+[ "$got_id" = "$want_id" ] || { docker rmi "$image" >/dev/null 2>&1; echo "image id mismatch: $got_id != $want_id" >&2; exit 1; }
 echo "loaded $image ($got_id)"
