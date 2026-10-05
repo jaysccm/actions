@@ -24,9 +24,15 @@ on:
         type: string
         default: bee
       deploy-host:
+        description: Runner label of the deploy host
         required: false
         type: string
         default: pearl
+      deploy-address:
+        description: Address the build host uses to reach the deploy host (must be in its known_hosts)
+        required: false
+        type: string
+        default: 192.168.1.150
 
 jobs:
   build-test:
@@ -42,7 +48,7 @@ jobs:
           TEST_COMMAND: ${{ inputs.test-command }}
         run: bash -euo pipefail -c "$TEST_COMMAND"
       - name: Ship the tested image to ${{ inputs.deploy-host }}
-        run: ~/services/ship.sh "${{ inputs.project }}" "$GITHUB_SHA" "$IMAGE" "${{ inputs.deploy-host }}"
+        run: ~/services/ship.sh "${{ inputs.project }}" "$GITHUB_SHA" "$IMAGE" "${{ inputs.deploy-address }}"
 
   deploy:
     needs: build-test
