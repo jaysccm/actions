@@ -14,6 +14,11 @@ on:
         description: Command run on the build host with the built image, e.g. "docker run --rm $IMAGE pytest -q"
         required: true
         type: string
+      target:
+        description: Dockerfile build target (default: the last stage)
+        required: false
+        type: string
+        default: ''
       context:
         description: Docker build context directory in the repository
         required: false
@@ -42,7 +47,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build
-        run: docker build --pull=false -t "$IMAGE" "${{ inputs.context }}"
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+        # The commit and a clean flag are baked in as labels so the production
+        # updater can prove the image is this commit before using it.
+        run: |
+          docker build --pull=false ${BUILD_TARGET:+--target "$BUILD_TARGET"} \
+            --build-arg "GIT_COMMIT=$GITHUB_SHA" --build-arg GIT_DIRTY=clean \
+            -t "$IMAGE" "${{ inputs.context }}"
       - name: Test
         env:
           TEST_COMMAND: ${{ inputs.test-command }}

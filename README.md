@@ -44,7 +44,7 @@ runs the project's `test-command`, and `host/ship.sh` streams that exact image t
 the deploy host, where `host/ship-receive.sh` loads it and compares the image ID.
 `deploy` then runs on the deploy host (`pearl`) and calls `deploy.sh` with
 `DEPLOY_IMAGE` set. Production health checks and migrations stay in `deploy.sh`.
-Recipes that cannot yet use a prebuilt image (currently `sportsbook`) refuse
+Recipes that cannot use a prebuilt image refuse
 instead of rebuilding.
 
 Install: `host/ship.sh` on the build host as `~/services/ship.sh` with a dedicated

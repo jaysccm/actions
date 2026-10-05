@@ -25,7 +25,7 @@ flock -n 9 || { echo "Another deploy is running" >&2; exit 3; }
 
 # Release mode (release.yml): the tested image was built on the build host and
 # loaded here; production must not build. Recipes use $DEPLOY_IMAGE instead of a
-# local build. A recipe that cannot do this yet must refuse, not rebuild.
+# local build; a recipe that cannot do this must refuse, not rebuild.
 release_mode=0
 [ -n "${DEPLOY_IMAGE:-}" ] && release_mode=1
 docker image inspect "${DEPLOY_IMAGE:-none}" >/dev/null 2>&1 || [ "$release_mode" = 0 ] || {
@@ -38,15 +38,17 @@ case "$project" in
     # the previous commit and image itself. It always leaves the collector
     # stopped, so put the collector back if it was running (Jay, 2026-10-03:
     # deploys may restart the collector).
-    if [ "$release_mode" = 1 ]; then
-      echo "sportsbook: its updater has no prebuilt-image option yet (JAY-110 4.2); refusing to rebuild on production" >&2
-      exit 5
-    fi
     collector_was_active=0
     systemctl is-active --quiet gamblor-collector.service && collector_was_active=1
 
     rc=0
-    python3 scripts/setup_wsl.py update --ref "$ref" --wait || rc=1
+    # In release mode the image was built and tested on the build host and is
+    # already loaded here; the updater verifies its commit and never builds.
+    if [ "$release_mode" = 1 ]; then
+      python3 scripts/setup_wsl.py update --ref "$ref" --wait --image "$DEPLOY_IMAGE" || rc=1
+    else
+      python3 scripts/setup_wsl.py update --ref "$ref" --wait || rc=1
+    fi
 
     if [ "$collector_was_active" = 1 ]; then
       python3 scripts/setup_wsl.py activate-collector || {
