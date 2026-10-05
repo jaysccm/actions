@@ -14,6 +14,14 @@ cd "$dir" || exit 2
 exec 9>"$HOME/services/.deploy.lock"
 flock -n 9 || { echo "Another deploy is running" >&2; exit 3; }
 
+# Release mode (release.yml): the tested image was built on the build host and
+# loaded here; production must not build. Recipes use $DEPLOY_IMAGE instead of a
+# local build. A recipe that cannot do this yet must refuse, not rebuild.
+release_mode=0
+[ -n "${DEPLOY_IMAGE:-}" ] && release_mode=1
+docker image inspect "${DEPLOY_IMAGE:-none}" >/dev/null 2>&1 || [ "$release_mode" = 0 ] || {
+  echo "Image $DEPLOY_IMAGE not found on this host" >&2; exit 4; }
+
 case "$project" in
   sportsbook)
     # The project's updater pauses jobs, fast-forwards, rebuilds, migrates,
@@ -21,6 +29,10 @@ case "$project" in
     # the previous commit and image itself. It always leaves the collector
     # stopped, so put the collector back if it was running (Jay, 2026-10-03:
     # deploys may restart the collector).
+    if [ "$release_mode" = 1 ]; then
+      echo "sportsbook: its updater has no prebuilt-image option yet (JAY-110 4.2); refusing to rebuild on production" >&2
+      exit 5
+    fi
     collector_was_active=0
     systemctl is-active --quiet gamblor-collector.service && collector_was_active=1
 

@@ -1,0 +1,53 @@
+# Reusable release: build and test on the build host, then deploy the same image
+# on the production host. Production never rebuilds and never runs the full test
+# suite. The caller decides when (needs/if); this decides how.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Project name; image is <project>:<commit>
+        required: true
+        type: string
+      test-command:
+        description: Command run on the build host with the built image, e.g. "docker run --rm $IMAGE pytest -q"
+        required: true
+        type: string
+      build-host:
+        required: false
+        type: string
+        default: bee
+      deploy-host:
+        required: false
+        type: string
+        default: pearl
+
+jobs:
+  build-test:
+    runs-on: [self-hosted, "${{ inputs.build-host }}"]
+    env:
+      IMAGE: ${{ inputs.project }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build --pull=false -t "$IMAGE" .
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"
+      - name: Ship the tested image to ${{ inputs.deploy-host }}
+        run: ~/services/ship.sh "${{ inputs.project }}" "$GITHUB_SHA" "$IMAGE" "${{ inputs.deploy-host }}"
+
+  deploy:
+    needs: build-test
+    runs-on: [self-hosted, "${{ inputs.deploy-host }}"]
+    concurrency:
+      group: deploy-${{ inputs.deploy-host }}
+      cancel-in-progress: false
+    steps:
+      - name: Deploy ${{ inputs.project }} on ${{ inputs.deploy-host }} from the shipped image
+        env:
+          PROJECT: ${{ inputs.project }}
+          DEPLOY_IMAGE: ${{ inputs.project }}:${{ github.sha }}
+        run: ~/services/deploy.sh "$PROJECT" "$GITHUB_SHA"
