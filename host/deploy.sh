@@ -7,6 +7,15 @@ project=${1:?usage: deploy.sh <project> <commit>}
 ref=${2:?usage: deploy.sh <project> <commit>}
 dir="$HOME/services/$project"
 
+# Throwaway project for rehearsing release.yml: no checkout, no service.
+if [ "$project" = dryrun ]; then
+  [ -n "${DEPLOY_IMAGE:-}" ] && docker image inspect "$DEPLOY_IMAGE" >/dev/null 2>&1 ||
+    { echo "dryrun: shipped image ${DEPLOY_IMAGE:-<unset>} not on this host" >&2; exit 4; }
+  echo "dryrun: $(hostname) has $DEPLOY_IMAGE ($(docker image inspect --format '{{.Id}}' "$DEPLOY_IMAGE")); no build ran here"
+  docker rmi "$DEPLOY_IMAGE" >/dev/null
+  exit 0
+fi
+
 [ -d "$dir/.git" ] || { echo "No checkout at $dir" >&2; exit 2; }
 cd "$dir" || exit 2
 
