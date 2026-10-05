@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       target:
-        description: Dockerfile build target (default: the last stage)
+        description: "Dockerfile build target; empty means the last stage"
         required: false
         type: string
         default: ''
