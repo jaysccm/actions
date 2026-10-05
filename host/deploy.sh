@@ -38,6 +38,15 @@ case "$project" in
       echo "::warning::deployment status reported warnings (see log above)"
     exit "$rc"
     ;;
+  telemetry)
+    # Config-only stack: the project's updater moves the checkout to the commit, recreates the stack, waits for
+    # Grafana to be healthy and rolls back itself on failure. A stack that was stopped on purpose stays stopped.
+    rc=0
+    ./update.sh "$ref" || rc=1
+
+    ./status.sh || echo "::warning::telemetry stack is not healthy (see log above)"
+    exit "$rc"
+    ;;
   *)
     echo "No deploy recipe for $project" >&2
     exit 2
