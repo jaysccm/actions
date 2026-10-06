@@ -1,0 +1,76 @@
+# Reusable release: build and test on the build host, then deploy the same image
+# on the production host. Production never rebuilds and never runs the full test
+# suite. The caller decides when (needs/if); this decides how.
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: Project name; image is <project>:<commit>
+        required: true
+        type: string
+      test-command:
+        description: Command run on the build host with the built image, e.g. "docker run --rm $IMAGE pytest -q"
+        required: true
+        type: string
+      target:
+        description: "Dockerfile build target; empty means the last stage"
+        required: false
+        type: string
+        default: ''
+      context:
+        description: Docker build context directory in the repository
+        required: false
+        type: string
+        default: .
+      build-host:
+        required: false
+        type: string
+        default: bee
+      deploy-host:
+        description: Runner label of the deploy host
+        required: false
+        type: string
+        default: pearl
+      deploy-address:
+        description: Address the build host uses to reach the deploy host (must be in its known_hosts)
+        required: false
+        type: string
+        default: 192.168.1.150
+
+jobs:
+  build-test:
+    runs-on: [self-hosted, "${{ inputs.build-host }}"]
+    env:
+      IMAGE: ${{ inputs.project }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+        # The commit and a clean flag are baked in as labels so the production
+        # updater can prove the image is this commit before using it.
+        run: |
+          docker build --pull=false ${BUILD_TARGET:+--target "$BUILD_TARGET"} \
+            --build-arg "GIT_COMMIT=$GITHUB_SHA" --build-arg GIT_DIRTY=clean \
+            -t "$IMAGE" "${{ inputs.context }}"
+      - name: Test
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -euo pipefail -c "$TEST_COMMAND"
+      - name: Ship the tested image to ${{ inputs.deploy-host }}
+        run: ~/services/ship.sh "${{ inputs.project }}" "$GITHUB_SHA" "$IMAGE" "${{ inputs.deploy-address }}"
+
+  deploy:
+    needs: build-test
+    runs-on: [self-hosted, "${{ inputs.deploy-host }}"]
+    concurrency:
+      group: deploy-${{ inputs.deploy-host }}
+      cancel-in-progress: false
+    steps:
+      - name: Deploy ${{ inputs.project }} on ${{ inputs.deploy-host }} from the shipped image
+        env:
+          PROJECT: ${{ inputs.project }}
+          DEPLOY_IMAGE: ${{ inputs.project }}:${{ github.sha }}
+        run: ~/services/deploy.sh "$PROJECT" "$GITHUB_SHA"
