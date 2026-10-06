@@ -104,8 +104,8 @@ All seven non-archived repositories returned by the jaysccm organization invento
 - `pearl`, `bigbrother`: no `.github/workflows` on main; no existing CI jobs to move.
   Adding new test coverage is separate work, not a completed migration claim.
 
-`poke` is in the knowledge base but absent from this organization's repository
-list; its repository/workflow location remains an inventory gap.
+`jayshaffer/poke` remains in the personal account (verified separately); its main
+branch has no `.github/workflows`, so there is no existing CI workload to move.
 
 References: [GitHub artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data),
 [Docker Actions cache](https://docs.docker.com/build/ci/github-actions/cache/).
