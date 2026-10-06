@@ -33,31 +33,21 @@ docker image inspect "${DEPLOY_IMAGE:-none}" >/dev/null 2>&1 || [ "$release_mode
 
 case "$project" in
   sportsbook)
-    # The project's updater pauses jobs, fast-forwards, rebuilds, migrates,
-    # recreates the API and waits for it to be healthy; on failure it restores
-    # the previous commit and image itself. It always leaves the collector
-    # stopped, so put the collector back if it was running (Jay, 2026-10-03:
-    # deploys may restart the collector).
-    collector_was_active=0
-    systemctl is-active --quiet gamblor-collector.service && collector_was_active=1
-
+    # Everything is Docker Compose (JAY-117): the project's script stops the collector and
+    # the scheduled jobs, fast-forwards, builds (or loads the prebuilt image), migrates,
+    # recreates the API and brings back what was running, rolling back itself on failure.
+    # No systemd and no sudo: the only access is Docker. Needs scripts/deploy.py, so a
+    # host still on the systemd setup must be moved first (docs/guides/deployment.md).
     rc=0
     # In release mode the image was built and tested on the build host and is
     # already loaded here; the updater verifies its commit and never builds.
     if [ "$release_mode" = 1 ]; then
-      python3 scripts/setup_wsl.py update --ref "$ref" --wait --image "$DEPLOY_IMAGE" || rc=1
+      python3 scripts/deploy.py update --ref "$ref" --wait --image "$DEPLOY_IMAGE" || rc=1
     else
-      python3 scripts/setup_wsl.py update --ref "$ref" --wait || rc=1
+      python3 scripts/deploy.py update --ref "$ref" --wait || rc=1
     fi
 
-    if [ "$collector_was_active" = 1 ]; then
-      python3 scripts/setup_wsl.py activate-collector || {
-        echo "::error::collector was running before the deploy and could not be restarted" >&2
-        rc=1
-      }
-    fi
-
-    python3 scripts/setup_wsl.py status ||
+    python3 scripts/deploy.py status ||
       echo "::warning::deployment status reported warnings (see log above)"
     exit "$rc"
     ;;
