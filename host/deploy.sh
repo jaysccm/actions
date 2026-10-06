@@ -61,6 +61,11 @@ case "$project" in
       echo "::warning::deployment status reported warnings (see log above)"
     exit "$rc"
     ;;
+  telemetry)
+    # Config-only stack: update.sh moves the checkout, pulls the pinned image, recreates the
+    # stack and waits for health, rolling back on failure. It never builds and never touches data.
+    exec ./update.sh "$ref"
+    ;;
   *)
     echo "No deploy recipe for $project" >&2
     exit 2
