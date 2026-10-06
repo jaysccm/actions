@@ -50,6 +50,8 @@ jobs:
           [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
       - uses: docker/setup-buildx-action@v3
       - name: Build
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.context }}
@@ -97,7 +99,7 @@ jobs:
     # No PR, dispatch or branch push can reach a production runner through this workflow.
     if: ${{ !inputs.deploy || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ${{ inputs.deploy && fromJSON(format('["self-hosted","{0}"]', inputs.deploy-host)) || fromJSON('["ubuntu-24.04"]') }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     concurrency:
       group: ${{ inputs.deploy && format('deploy-{0}', inputs.deploy-host) || format('rehearse-{0}-{1}', github.run_id, inputs.project) }}
       cancel-in-progress: false

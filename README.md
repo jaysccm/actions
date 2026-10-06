@@ -52,7 +52,8 @@ runner support for the download action must be verified during rollout.
 
 Production is restricted to push-to-main runs and serialized per deploy host.
 The caller must still gate the release job on all its checks. Build/test has a
-45-minute timeout; receive/deploy has 30 minutes. This targets linux/amd64, matching
+45-minute timeout; receive/deploy has 90 minutes to accommodate the updater's
+one-hour scheduled-job wait plus update/rollback time. This targets linux/amd64, matching
 the current hosts. Other architectures need a separate validated configuration.
 
 Set `deploy: false` to run the same download, integrity and load steps on a fresh

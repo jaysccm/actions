@@ -16,7 +16,7 @@ jobs:
       - name: Reject corrupt or mismatched artifacts
         run: python3 -m unittest discover -s tests -v
       - name: Shell syntax
-        run: bash -n host/*.sh
+        run: for script in host/*.sh; do bash -n "$script"; done
   artifact-rehearsal:
     uses: ./.github/workflows/release.yml
     with:
