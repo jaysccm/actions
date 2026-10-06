@@ -62,9 +62,13 @@ case "$project" in
     exit "$rc"
     ;;
   telemetry)
-    # Config-only stack: update.sh moves the checkout, pulls the pinned image, recreates the
-    # stack and waits for health, rolling back on failure. It never builds and never touches data.
-    exec ./update.sh "$ref"
+    # Config-only stack: the project's updater moves the checkout to the commit, recreates the stack, waits for
+    # Grafana to be healthy and rolls back itself on failure. A stack that was stopped on purpose stays stopped.
+    rc=0
+    ./update.sh "$ref" || rc=1
+
+    ./status.sh || echo "::warning::telemetry stack is not healthy (see log above)"
+    exit "$rc"
     ;;
   *)
     echo "No deploy recipe for $project" >&2
