@@ -46,23 +46,38 @@ case "$project" in
     exit "$rc"
     ;;
   sportsbook)
-    # Everything is Docker Compose (JAY-117): the project's script stops the collector and
-    # the scheduled jobs, fast-forwards, builds (or loads the prebuilt image), migrates,
-    # recreates the API and brings back what was running, rolling back itself on failure.
-    # No systemd and no sudo: the only access is Docker. Needs scripts/deploy.py, so a
-    # host still on the systemd setup must be moved first (docs/guides/deployment.md).
-    rc=0
-    # In release mode the image was built and tested on the build host and is
-    # already loaded here; the updater verifies its commit and never builds.
-    if [ "$release_mode" = 1 ]; then
-      python3 scripts/deploy.py update --ref "$ref" --wait --image "$DEPLOY_IMAGE" || rc=1
-    else
-      python3 scripts/deploy.py update --ref "$ref" --wait || rc=1
+    if [ -f scripts/deploy.py ]; then
+      # Compose-native updater (JAY-117). In release mode it uses the tested
+      # image already loaded on this host and does not rebuild.
+      rc=0
+      if [ "$release_mode" = 1 ]; then
+        python3 scripts/deploy.py update --ref "$ref" --wait --image "$DEPLOY_IMAGE" || rc=1
+      else
+        python3 scripts/deploy.py update --ref "$ref" --wait || rc=1
+      fi
+      python3 scripts/deploy.py status ||
+        echo "::warning::deployment status reported warnings (see log above)"
+      exit "$rc"
     fi
-
-    python3 scripts/deploy.py status ||
-      echo "::warning::deployment status reported warnings (see log above)"
-    exit "$rc"
+    # Bee is still on the older systemd-backed Sportsbook checkout. Preserve
+    # its installed deploy path until that project is migrated to JAY-117.
+    if [ -f scripts/setup_wsl.py ] && [ "$release_mode" = 0 ]; then
+      collector_was_active=0
+      systemctl is-active --quiet gamblor-collector.service && collector_was_active=1
+      rc=0
+      python3 scripts/setup_wsl.py update --ref "$ref" --wait || rc=1
+      if [ "$collector_was_active" = 1 ]; then
+        python3 scripts/setup_wsl.py activate-collector || {
+          echo "::error::collector was running before the deploy and could not be restarted" >&2
+          rc=1
+        }
+      fi
+      python3 scripts/setup_wsl.py status ||
+        echo "::warning::deployment status reported warnings (see log above)"
+      exit "$rc"
+    fi
+    echo "Sportsbook checkout lacks a compatible updater for this deploy mode" >&2
+    exit 4
     ;;
   telemetry)
     # Config-only stack: the project's updater moves the checkout to the commit, recreates the stack, waits for
