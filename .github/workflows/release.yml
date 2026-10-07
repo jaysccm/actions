@@ -1,8 +1,5 @@
-# Reusable release: build and test on the build host, then deploy the same image
-# on the production host. Production never rebuilds and never runs the full test
-# suite. The caller decides when (needs/if); this decides how.
+# Build/test on GitHub; transfer the tested image through an immutable run artifact.
 name: Release
-
 on:
   workflow_call:
     inputs:
@@ -11,66 +8,133 @@ on:
         required: true
         type: string
       test-command:
-        description: Command run on the build host with the built image, e.g. "docker run --rm $IMAGE pytest -q"
+        description: Command to test the built image in $IMAGE
         required: true
         type: string
       target:
-        description: "Dockerfile build target; empty means the last stage"
-        required: false
+        description: Dockerfile target; empty selects the last stage
         type: string
         default: ''
       context:
-        description: Docker build context directory in the repository
-        required: false
+        description: Docker build context in the caller repository
         type: string
         default: .
-      build-host:
-        required: false
-        type: string
-        default: bee
       deploy-host:
-        description: Runner label of the deploy host
-        required: false
+        description: Production runner label
         type: string
         default: pearl
-      deploy-address:
-        description: Address the build host uses to reach the deploy host (must be in its known_hosts)
-        required: false
-        type: string
-        default: 192.168.1.150
+      deploy:
+        description: False rehearses artifact delivery on GitHub without touching production
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 jobs:
   build-test:
-    runs-on: [self-hosted, "${{ inputs.build-host }}"]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      image-id: ${{ steps.pack.outputs.image-id }}
+      archive-sha: ${{ steps.pack.outputs.archive-sha }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     env:
       IMAGE: ${{ inputs.project }}:${{ github.sha }}
+      PROJECT: ${{ inputs.project }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate image name
+        shell: bash
+        run: |
+          [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+      - uses: docker/setup-buildx-action@v3
       - name: Build
         env:
-          BUILD_TARGET: ${{ inputs.target }}
-        # The commit and a clean flag are baked in as labels so the production
-        # updater can prove the image is this commit before using it.
-        run: |
-          docker build --pull=false ${BUILD_TARGET:+--target "$BUILD_TARGET"} \
-            --build-arg "GIT_COMMIT=$GITHUB_SHA" --build-arg GIT_DIRTY=clean \
-            -t "$IMAGE" "${{ inputs.context }}"
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          target: ${{ inputs.target }}
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.IMAGE }}
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            GIT_DIRTY=clean
+          cache-from: type=gha,scope=release-${{ inputs.project }}-${{ inputs.target }}
+          cache-to: type=gha,mode=max,scope=release-${{ inputs.project }}-${{ inputs.target }}
+      - name: Remember the image being tested
+        shell: bash
+        run: docker image inspect --format '{{.Id}}' "$IMAGE" > "$RUNNER_TEMP/tested-image-id"
       - name: Test
         env:
           TEST_COMMAND: ${{ inputs.test-command }}
+        shell: bash
         run: bash -euo pipefail -c "$TEST_COMMAND"
-      - name: Ship the tested image to ${{ inputs.deploy-host }}
-        run: ~/services/ship.sh "${{ inputs.project }}" "$GITHUB_SHA" "$IMAGE" "${{ inputs.deploy-address }}"
+      - name: Package only the tested image
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+          [[ "$image_id" == "$(cat "$RUNNER_TEMP/tested-image-id")" ]]
+          mkdir -p "$RUNNER_TEMP/release"
+          docker save "$IMAGE" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
+          archive_sha=$(sha256sum "$RUNNER_TEMP/release/image.tar.gz" | cut -d ' ' -f 1)
+          echo "image-id=$image_id" >> "$GITHUB_OUTPUT"
+          echo "archive-sha=$archive_sha" >> "$GITHUB_OUTPUT"
+      - name: Upload tested image
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ inputs.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release/image.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
-  deploy:
+  receive:
     needs: build-test
-    runs-on: [self-hosted, "${{ inputs.deploy-host }}"]
+    # No PR, dispatch or branch push can reach a production runner through this workflow.
+    if: ${{ !inputs.deploy || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+    runs-on: ${{ inputs.deploy && fromJSON(format('["self-hosted","{0}"]', inputs.deploy-host)) || fromJSON('["ubuntu-24.04"]') }}
+    timeout-minutes: 90
     concurrency:
-      group: deploy-${{ inputs.deploy-host }}
+      group: ${{ inputs.deploy && format('deploy-{0}', inputs.deploy-host) || format('rehearse-{0}-{1}', github.run_id, inputs.project) }}
       cancel-in-progress: false
+    env:
+      PROJECT: ${{ inputs.project }}
+      DEPLOY_IMAGE: ${{ inputs.project }}:${{ github.sha }}
+      EXPECTED_IMAGE_ID: ${{ needs.build-test.outputs.image-id }}
+      EXPECTED_ARCHIVE_SHA: ${{ needs.build-test.outputs.archive-sha }}
+      ARCHIVE_NAME: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.project }}
     steps:
-      - name: Deploy ${{ inputs.project }} on ${{ inputs.deploy-host }} from the shipped image
-        env:
-          PROJECT: ${{ inputs.project }}
-          DEPLOY_IMAGE: ${{ inputs.project }}:${{ github.sha }}
+      # No caller checkout or downloaded script executes on production.
+      - name: Download this run's tested image
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build-test.outputs.artifact-id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}
+      - name: Verify archive and load identical image
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_ARCHIVE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$RUNNER_TEMP/$ARCHIVE_NAME/image.tar.gz"
+          actual_sha=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          [[ "$actual_sha" == "$EXPECTED_ARCHIVE_SHA" ]] || { echo 'Archive checksum mismatch' >&2; exit 1; }
+          gunzip -c "$archive" | docker load
+          actual_id=$(docker image inspect --format '{{.Id}}' "$DEPLOY_IMAGE")
+          [[ "$actual_id" == "$EXPECTED_IMAGE_ID" ]] || { echo 'Image ID mismatch' >&2; exit 1; }
+          echo "Verified $DEPLOY_IMAGE ($actual_id)"
+      - name: Deploy tested image without rebuilding
+        if: inputs.deploy
+        shell: bash
         run: ~/services/deploy.sh "$PROJECT" "$GITHUB_SHA"
+      - name: Remove downloaded archive
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/$ARCHIVE_NAME/image.tar.gz"
