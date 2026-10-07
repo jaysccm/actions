@@ -14,7 +14,7 @@ on:
         description: Runner label of the host to deploy on
         required: false
         type: string
-        default: bee
+        default: pearl
 
 jobs:
   deploy:

@@ -1,0 +1,26 @@
+name: Shared workflow checks
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Workflow syntax
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -shellcheck=
+      - name: Reject corrupt or mismatched artifacts
+        run: python3 -m unittest discover -s tests -v
+      - name: Shell syntax
+        run: for script in host/*.sh; do bash -n "$script"; done
+  artifact-rehearsal:
+    uses: ./.github/workflows/release.yml
+    with:
+      project: release-fixture
+      context: tests/fixture
+      test-command: docker run --rm "$IMAGE" | grep -Fx fixture-passed
+      deploy: false
