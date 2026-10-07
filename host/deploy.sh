@@ -32,6 +32,19 @@ docker image inspect "${DEPLOY_IMAGE:-none}" >/dev/null 2>&1 || [ "$release_mode
   echo "Image $DEPLOY_IMAGE not found on this host" >&2; exit 4; }
 
 case "$project" in
+  algo)
+    # Pinchy is intentionally deployed on bee. Its updater requires the exact
+    # image ID from release.yml and preserves HALT and timer state itself.
+    if [ "$release_mode" != 1 ] || [ "$DEPLOY_IMAGE" != "algo:$ref" ] || [ -z "${EXPECTED_IMAGE_ID:-}" ]; then
+      echo "algo requires a verified release image and its expected image ID" >&2
+      exit 4
+    fi
+    rc=0
+    python3 scripts/update.py "$ref" --expected-image-id "$EXPECTED_IMAGE_ID" || rc=1
+    python3 scripts/status.py ||
+      echo "::warning::Pinchy status could not be reported (see log above)"
+    exit "$rc"
+    ;;
   sportsbook)
     # Everything is Docker Compose (JAY-117): the project's script stops the collector and
     # the scheduled jobs, fast-forwards, builds (or loads the prebuilt image), migrates,
