@@ -31,6 +31,66 @@ release_mode=0
 docker image inspect "${DEPLOY_IMAGE:-none}" >/dev/null 2>&1 || [ "$release_mode" = 0 ] || {
   echo "Image $DEPLOY_IMAGE not found on this host" >&2; exit 4; }
 
+# Pipeline telemetry (JAY-122): optional and non-blocking. A deploy only counts as successful when the
+# updater exited 0, a running container of this project is the tested image, and none is unhealthy;
+# the job exit status alone is not enough. It is recorded, and fails the job only when
+# DEPLOY_VERIFY_ENFORCE=1. Needs OTEL_EXPORTER_OTLP_ENDPOINT and pipeline_metrics.py beside this script.
+pm_script="$(dirname "$0")/pipeline_metrics.py"
+pm_emit() {
+  [ -f "$pm_script" ] && [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] || return 0
+  timeout 20 python3 "$pm_script" record --project "$project" --env "${PIPELINE_ENV:-production}" "$@" || true
+}
+pm_images() {
+  { docker ps -q --filter "label=com.docker.compose.project=$project" 2>/dev/null |
+    xargs -r docker inspect --format '{{.Image}}' 2>/dev/null; } | sort -u
+}
+pm_healthy() {
+  local ids states
+  ids=$(docker ps -q --filter "label=com.docker.compose.project=$project" 2>/dev/null) && [ -n "$ids" ] || return 1
+  # shellcheck disable=SC2086
+  states=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $ids 2>/dev/null) || return 1
+  ! grep -qE '^(unhealthy|starting)$' <<<"$states"
+}
+pm_started=$(date +%s)
+pm_before=$(pm_images 2>/dev/null || true)
+pm_finish() {
+  local rc=$? elapsed verify=skipped health=failure good=0 images
+  trap - EXIT
+  elapsed=$(( $(date +%s) - pm_started ))
+  if [ "$rc" = 130 ] || [ "$rc" = 143 ]; then
+    pm_emit job stage=deploy outcome=canceled
+  elif [ "$rc" = 0 ]; then
+    if [ "$release_mode" = 1 ]; then
+      images=$(pm_images)
+      if [ -z "$images" ]; then verify=error
+      elif grep -Fxq "${EXPECTED_IMAGE_ID:-none}" <<<"$images"; then verify=ok
+      else verify=mismatch; fi
+    fi
+    pm_healthy && health=success
+    if [ "$health" = success ] && { [ "$release_mode" = 0 ] || [ "$verify" = ok ]; }; then good=1; fi
+    pm_emit job stage=health outcome=$health
+    [ "$release_mode" = 1 ] && pm_emit verify point=target outcome=$verify
+    if [ "$good" = 1 ]; then
+      pm_emit job stage=deploy outcome=success duration=$elapsed
+    else
+      pm_emit job stage=deploy outcome=failure duration=$elapsed
+      echo "::warning::deploy exited 0 but is not verified (artifact check: $verify, health: $health)" >&2
+      [ "${DEPLOY_VERIFY_ENFORCE:-0}" = 1 ] && rc=1
+    fi
+  else
+    pm_emit job stage=deploy outcome=failure duration=$elapsed
+    # The updater must put the previous version back; record whether that is what is running and healthy.
+    if [ -n "$pm_before" ]; then
+      if [ "$(pm_images)" = "$pm_before" ] && pm_healthy; then pm_emit rollback outcome=success
+      else pm_emit rollback outcome=failure; fi
+    fi
+  fi
+  exit "$rc"
+}
+trap pm_finish EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
 case "$project" in
   algo)
     # Pinchy is intentionally deployed on bee. Its updater requires the exact

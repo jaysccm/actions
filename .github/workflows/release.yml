@@ -27,6 +27,14 @@ on:
         description: False rehearses artifact delivery on GitHub without touching production
         type: boolean
         default: true
+      no-cache:
+        description: Build without the layer cache (a clean build); recorded as cache_state=clean
+        type: boolean
+        default: false
+      telemetry-endpoint:
+        description: Optional OTLP/HTTP endpoint reachable from the production runner (falls back to vars.PIPELINE_OTLP_ENDPOINT); empty disables pipeline metrics
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -39,6 +47,8 @@ jobs:
       image-id: ${{ steps.pack.outputs.image-id }}
       archive-sha: ${{ steps.pack.outputs.archive-sha }}
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      events: ${{ steps.telemetry.outputs.events }}
+      finished: ${{ steps.telemetry.outputs.finished }}
     env:
       IMAGE: ${{ inputs.project }}:${{ github.sha }}
       PROJECT: ${{ inputs.project }}
@@ -49,7 +59,10 @@ jobs:
         run: |
           [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
       - uses: docker/setup-buildx-action@v3
+      - name: Build timer
+        run: echo "PM_BUILD0=$(date +%s)" >> "$GITHUB_ENV"
       - name: Build
+        id: build
         env:
           DOCKER_BUILD_RECORD_UPLOAD: "false"
         uses: docker/build-push-action@v6
@@ -62,14 +75,20 @@ jobs:
           build-args: |
             GIT_COMMIT=${{ github.sha }}
             GIT_DIRTY=clean
+          no-cache: ${{ inputs.no-cache }}
           cache-from: type=gha,scope=release-${{ inputs.project }}-${{ inputs.target }}
           cache-to: type=gha,mode=max,scope=release-${{ inputs.project }}-${{ inputs.target }}
       - name: Remember the image being tested
         shell: bash
         run: docker image inspect --format '{{.Id}}' "$IMAGE" > "$RUNNER_TEMP/tested-image-id"
+      - name: Test timer
+        run: echo "PM_TEST0=$(date +%s)" >> "$GITHUB_ENV"
       - name: Test
+        id: test
         env:
           TEST_COMMAND: ${{ inputs.test-command }}
+          # Optional: the test command may write {"passed":N,"failed":N,"skipped":N} here.
+          PIPELINE_TEST_SUMMARY: ${{ runner.temp }}/test-summary.json
         shell: bash
         run: bash -euo pipefail -c "$TEST_COMMAND"
       - name: Package only the tested image
@@ -93,6 +112,47 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
+      # Telemetry is optional and must never decide the outcome of a release.
+      - name: Summarise stage results for telemetry
+        id: telemetry
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          TEST_OUTCOME: ${{ steps.test.outcome }}
+          SHIP_OUTCOME: ${{ steps.upload.outcome }}
+          NO_CACHE: ${{ inputs.no-cache }}
+          PIPELINE_TEST_SUMMARY: ${{ runner.temp }}/test-summary.json
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT" || true
+          import json, os, re, time
+          now = int(time.time())
+          e = os.environ
+          def num(name):
+              v = e.get(name, "")
+              return int(v) if re.fullmatch(r"\d{1,12}", v) else None
+          outcome = {"success": "success", "failure": "failure", "cancelled": "canceled"}
+          b0 = num("PM_BUILD0")
+          t_test = num("PM_TEST0")
+          events = []
+          cache = "clean" if e.get("NO_CACHE") == "true" else "unknown"
+          if e["BUILD_OUTCOME"] in outcome and b0 is not None:
+              end = t_test or now
+              events.append(f"job stage=build outcome={outcome[e['BUILD_OUTCOME']]} duration={max(end - b0, 0)} cache={cache}")
+          if e["TEST_OUTCOME"] in outcome and t_test is not None:
+              events.append(f"job stage=test outcome={outcome[e['TEST_OUTCOME']]} duration={max(now - t_test, 0)}")
+              try:
+                  s = json.load(open(e["PIPELINE_TEST_SUMMARY"]))
+                  parts = [f"{k}={int(s[k])}" for k in ("passed", "failed", "skipped") if isinstance(s.get(k), int) and 0 <= s[k] < 10**9]
+                  if parts:
+                      events.append("tests " + " ".join(parts))
+              except (OSError, ValueError, TypeError):
+                  pass
+          print("events=" + " + ".join(events))
+          print(f"finished={now}")
+          PY
 
   receive:
     needs: build-test
@@ -103,6 +163,8 @@ jobs:
     concurrency:
       group: ${{ inputs.deploy && format('deploy-{0}', inputs.deploy-host) || format('rehearse-{0}-{1}', github.run_id, inputs.project) }}
       cancel-in-progress: false
+    outputs:
+      events: ${{ steps.telemetry.outputs.events }}
     env:
       PROJECT: ${{ inputs.project }}
       DEPLOY_IMAGE: ${{ inputs.project }}:${{ github.sha }}
@@ -111,6 +173,14 @@ jobs:
       ARCHIVE_NAME: release-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.project }}
     steps:
       # No caller checkout or downloaded script executes on production.
+      - name: Start timer
+        shell: bash
+        env:
+          BUILD_FINISHED: ${{ needs.build-test.outputs.finished }}
+        run: |
+          now=$(date +%s)
+          echo "PM_R0=$now" >> "$GITHUB_ENV"
+          [[ "$BUILD_FINISHED" =~ ^[0-9]{1,12}$ ]] && echo "PM_RQUEUE=$(( now - BUILD_FINISHED ))" >> "$GITHUB_ENV" || true
       - name: Download this run's tested image
         uses: actions/download-artifact@v4
         with:
@@ -118,14 +188,16 @@ jobs:
           merge-multiple: true
           path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}
       - name: Verify archive and load identical image
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
+          echo "result=error" >> "$GITHUB_OUTPUT"
           [[ "$EXPECTED_ARCHIVE_SHA" =~ ^[0-9a-f]{64}$ ]]
           [[ "$EXPECTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
           archive="$RUNNER_TEMP/$ARCHIVE_NAME/image.tar.gz"
           actual_sha=$(sha256sum "$archive" | cut -d ' ' -f 1)
-          [[ "$actual_sha" == "$EXPECTED_ARCHIVE_SHA" ]] || { echo 'Archive checksum mismatch' >&2; exit 1; }
+          [[ "$actual_sha" == "$EXPECTED_ARCHIVE_SHA" ]] || { echo 'result=mismatch' >> "$GITHUB_OUTPUT"; echo 'Archive checksum mismatch' >&2; exit 1; }
           # Docker versions may report the config, platform manifest, or OCI
           # index digest as .Id for the same loaded image. Derive all three
           # from the checksum-verified archive and require both IDs to belong
@@ -164,14 +236,15 @@ jobs:
           read -r config_id manifest_id index_id <<< "$archive_ids"
           case "$EXPECTED_IMAGE_ID" in
             "$config_id"|"$manifest_id"|"$index_id") ;;
-            *) echo 'Build image ID is absent from verified archive' >&2; exit 1 ;;
+            *) echo 'result=mismatch' >> "$GITHUB_OUTPUT"; echo 'Build image ID is absent from verified archive' >&2; exit 1 ;;
           esac
           gunzip -c "$archive" | docker load
           actual_id=$(docker image inspect --format '{{.Id}}' "$DEPLOY_IMAGE")
           case "$actual_id" in
             "$config_id"|"$manifest_id"|"$index_id") ;;
-            *) echo 'Image ID mismatch' >&2; exit 1 ;;
+            *) echo 'result=mismatch' >> "$GITHUB_OUTPUT"; echo 'Image ID mismatch' >&2; exit 1 ;;
           esac
+          echo "result=ok" >> "$GITHUB_OUTPUT"
           echo "EXPECTED_IMAGE_ID=$actual_id" >> "$GITHUB_ENV"
           echo "Verified $DEPLOY_IMAGE ($actual_id)"
       - name: Deploy tested image without rebuilding
@@ -182,3 +255,47 @@ jobs:
         if: always()
         shell: bash
         run: rm -f -- "$RUNNER_TEMP/$ARCHIVE_NAME/image.tar.gz"
+      - name: Summarise stage results for telemetry
+        id: telemetry
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        shell: bash
+        env:
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          VERIFY_RESULT: ${{ steps.verify.outputs.result }}
+        run: |
+          now=$(date +%s)
+          events=""
+          if [[ "${PM_RQUEUE:-}" =~ ^[0-9]+$ ]]; then events="queue stage=ship wait=$PM_RQUEUE"; fi
+          # Ship = fetch, verify and load of the tested archive; deploy/health/rollback come from deploy.sh itself.
+          if [[ "${PM_R0:-}" =~ ^[0-9]+$ && "$VERIFY_OUTCOME" != skipped ]]; then
+            case "$VERIFY_OUTCOME" in success) o=success ;; cancelled) o=canceled ;; *) o=failure ;; esac
+            events="${events:+$events + }job stage=ship outcome=$o duration=$(( now - PM_R0 ))"
+            case "$VERIFY_RESULT" in ok|mismatch|error) events="$events + verify point=archive outcome=$VERIFY_RESULT" ;; esac
+          fi
+          echo "events=$events" >> "$GITHUB_OUTPUT"
+
+  # Production telemetry runs only for real releases and never gates one: nothing depends on this job.
+  report:
+    needs: [build-test, receive]
+    if: ${{ always() && inputs.deploy && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ${{ fromJSON(format('["self-hosted","{0}"]', inputs.deploy-host)) }}
+    timeout-minutes: 5
+    continue-on-error: true
+    steps:
+      - name: Record pipeline metrics
+        continue-on-error: true
+        shell: bash
+        env:
+          PM_PROJECT: ${{ inputs.project }}
+          PM_EVENTS: ${{ needs.build-test.outputs.events }}${{ needs.build-test.outputs.events && needs.receive.outputs.events && ' + ' || '' }}${{ needs.receive.outputs.events }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ inputs.telemetry-endpoint || vars.PIPELINE_OTLP_ENDPOINT }}
+        run: |
+          # Optional script installed beside deploy.sh; it validates every value and always exits 0.
+          set -f
+          script="$HOME/services/pipeline_metrics.py"
+          if [ -n "$OTEL_EXPORTER_OTLP_ENDPOINT" ] && [ -f "$script" ]; then
+            # shellcheck disable=SC2086
+            timeout 30 python3 "$script" record --project "$PM_PROJECT" $PM_EVENTS || true
+          fi

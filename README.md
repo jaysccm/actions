@@ -93,6 +93,61 @@ Record actual build minutes and compressed image size from initial runs. Billing
 and included allowances depend on the organization's plan and remain unknown;
 no paid larger runner or billing setting is enabled here.
 
+## Pipeline metrics (JAY-122)
+
+`host/pipeline_metrics.py` records delivery metrics and pushes them to an OTLP/HTTP
+endpoint. It is optional and never blocks: with no `OTEL_EXPORTER_OTLP_ENDPOINT` it does
+nothing, and a bad argument, unreachable endpoint or corrupt state file is logged to stderr
+with exit status 0. Install it beside `deploy.sh` (`scp host/pipeline_metrics.py
+pearl:services/`); it keeps cumulative counters in `~/services/.pipeline-metrics.json`.
+
+| Series (Prometheus name) | Type | Labels |
+| --- | --- | --- |
+| `delivery_jobs_total` | counter | project, stage (build/test/ship/deploy/health), outcome (success/failure/canceled) |
+| `delivery_job_duration_seconds` | histogram | project, stage, cache_state (clean/cached/unknown; build only) |
+| `delivery_queue_wait_seconds` | histogram | stage (`ship`: build finished to receive job started) |
+| `delivery_artifact_verifications_total` | counter | project, point (archive/target), outcome (ok/mismatch/error) |
+| `delivery_tests_total` | counter | project, result (passed/failed/skipped) |
+| `delivery_rollbacks_total` | counter | project, outcome (success/failure) |
+| `delivery_last_success_timestamp_seconds` | gauge | project, stage |
+
+Resource: `service.name=delivery-pipeline`, `service.namespace=jaysccm`,
+`deployment.environment.name` (production by default). Commit SHAs, run/job IDs and
+branch names are rejected as label values; correlate them in logs. `point` is a
+deviation from the proposed catalog (which had project, outcome only) so the archive
+check and the deployed-target check are not mixed.
+
+Where it runs. GitHub-hosted runners cannot reach the LAN stack, so `release.yml`
+collects stage results on the hosted runners (job outputs) and a `report` job on the
+production runner records them. It runs only for push-to-main releases, nothing depends
+on it, and it is skipped when `telemetry-endpoint`/`vars.PIPELINE_OTLP_ENDPOINT` is
+empty or the script is not installed. PR rehearsals report nothing. `deploy.sh` itself
+records deploy, health, target verification and rollback.
+
+Definitions. Deploy success is not the job exit status: it needs the updater to exit 0,
+a running container labelled `com.docker.compose.project=<project>` whose image is the
+tested `EXPECTED_IMAGE_ID`, and no unhealthy/starting container. Otherwise a deploy that
+exits 0 is recorded as a failure with a warning; set `DEPLOY_VERIFY_ENFORCE=1` to also
+fail the job (off by default so merging this changes no production behaviour). After a
+failed update, rollback is `success` only when the previously running images are running
+again and healthy; the first deploy of a project (nothing running before) records none.
+Config-only projects (telemetry) have no artifact check, only health. A cancelled deploy
+is `canceled`, not failure.
+
+Known limits: `cache_state` is `clean` only for `no-cache: true` builds, otherwise
+`unknown` (GitHub gives no cache-hit signal to later steps); test counts appear only if
+the test command writes `{"passed":N,"failed":N,"skipped":N}` to `$PIPELINE_TEST_SUMMARY`;
+first-job runner queue wait is not measured (the API needs `actions: read`); "target runs
+the tested image" is any-running-container, so a project with several images must also be
+checked by its own updater; native (non-Docker) services record health/verification as
+failed/error until an adapter exists (JAY-132).
+
+Tests: `python3 -m unittest discover -s tests` covers the emitter (disabled, outage,
+corrupt state, bounded labels), the workflow's summary step (failed/cancelled build, bad
+test summaries), and `deploy.sh` against a scratch project with a fake docker: verified
+success, failed health check, artifact mismatch, failed update with and without a
+holding rollback, first deploy, and telemetry outage/absence.
+
 ## Inventory (2026-10-06)
 
 All seven non-archived repositories returned by the jaysccm organization inventory:
