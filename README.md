@@ -44,7 +44,9 @@ Only after success does it upload a gzipped Docker image as an immutable Actions
 artifact (seven-day retention). A retagged image after testing is rejected.
 
 The receive job downloads the specific artifact ID from the same run, verifies
-its SHA-256 before loading, verifies the Docker image ID after loading, then calls
+its SHA-256 before loading, and accepts only an image ID derived from that archive's
+config, platform manifest or OCI index. Docker engines can report different IDs
+for the same archive; the receiver passes its actual loaded ID to the updater. It then calls
 `~/services/deploy.sh` with `DEPLOY_IMAGE`. No build or full test suite runs on
 pearl. Transfer needs outbound HTTPS to GitHub's artifact service, not inbound
 LAN access, a registry password, or the old bee-to-pearl SSH key. Self-hosted
@@ -81,7 +83,7 @@ check exits before invoking the updater.
 
 Rollout: review the shared workflow and caller PRs, run the actual caller's
 `deploy: false` rehearsal, then schedule the first production release with Jay.
-Verify outbound artifact access, identical image ID, health and rollback. Revert
+Verify outbound artifact access, loaded image identity against the archive, health and rollback. Revert
 the caller's pinned workflow reference to its prior revision to restore the old
 pipeline if necessary; never bypass a failed test to deploy.
 

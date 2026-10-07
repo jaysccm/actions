@@ -126,9 +126,53 @@ jobs:
           archive="$RUNNER_TEMP/$ARCHIVE_NAME/image.tar.gz"
           actual_sha=$(sha256sum "$archive" | cut -d ' ' -f 1)
           [[ "$actual_sha" == "$EXPECTED_ARCHIVE_SHA" ]] || { echo 'Archive checksum mismatch' >&2; exit 1; }
+          # Docker versions may report the config, platform manifest, or OCI
+          # index digest as .Id for the same loaded image. Derive all three
+          # from the checksum-verified archive and require both IDs to belong
+          # to this exact image/tag. The host's actual ID goes to the updater.
+          archive_ids=$(python3 - "$archive" "$DEPLOY_IMAGE" <<'PY'
+          import hashlib
+          import json
+          import sys
+          import tarfile
+
+          with tarfile.open(sys.argv[1], "r:gz") as archive_tar:
+              legacy = json.load(archive_tar.extractfile("manifest.json"))
+              tagged = [entry for entry in legacy if sys.argv[2] in entry.get("RepoTags", [])]
+              if len(tagged) != 1:
+                  raise SystemExit("Release tag is missing or ambiguous in archive")
+              config = archive_tar.extractfile(tagged[0]["Config"]).read()
+              config_id = "sha256:" + hashlib.sha256(config).hexdigest()
+              index_bytes = archive_tar.extractfile("index.json").read()
+              index = json.loads(index_bytes)
+              index_id = "sha256:" + hashlib.sha256(index_bytes).hexdigest()
+              manifests = []
+              for descriptor in index["manifests"]:
+                  digest = descriptor["digest"]
+                  if not digest.startswith("sha256:"):
+                      raise SystemExit("Unsupported manifest digest")
+                  blob = archive_tar.extractfile("blobs/sha256/" + digest[7:]).read()
+                  if hashlib.sha256(blob).hexdigest() != digest[7:]:
+                      raise SystemExit("Manifest digest mismatch in archive")
+                  if json.loads(blob).get("config", {}).get("digest") == config_id:
+                      manifests.append(digest)
+              if len(manifests) != 1:
+                  raise SystemExit("Cannot identify one platform manifest for release image")
+              print(config_id, manifests[0], index_id)
+          PY
+          )
+          read -r config_id manifest_id index_id <<< "$archive_ids"
+          case "$EXPECTED_IMAGE_ID" in
+            "$config_id"|"$manifest_id"|"$index_id") ;;
+            *) echo 'Build image ID is absent from verified archive' >&2; exit 1 ;;
+          esac
           gunzip -c "$archive" | docker load
           actual_id=$(docker image inspect --format '{{.Id}}' "$DEPLOY_IMAGE")
-          [[ "$actual_id" == "$EXPECTED_IMAGE_ID" ]] || { echo 'Image ID mismatch' >&2; exit 1; }
+          case "$actual_id" in
+            "$config_id"|"$manifest_id"|"$index_id") ;;
+            *) echo 'Image ID mismatch' >&2; exit 1 ;;
+          esac
+          echo "EXPECTED_IMAGE_ID=$actual_id" >> "$GITHUB_ENV"
           echo "Verified $DEPLOY_IMAGE ($actual_id)"
       - name: Deploy tested image without rebuilding
         if: inputs.deploy
