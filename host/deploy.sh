@@ -91,6 +91,17 @@ trap pm_finish EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 
+# Projects that ship the standard scripts (JAY-147) deploy through their own script/deploy: update, health wait,
+# rollback and status in one contract. Not exec'd, so the metrics trap above still runs. DEPLOY_IMAGE and
+# EXPECTED_IMAGE_ID stay in the environment for the project's hooks, which must enforce any release-mode rule the
+# case branches below enforce today (algo: a verified image and its expected ID). Unlike the legacy recipes, an
+# unhealthy final status fails the deploy.
+if [ -x script/deploy ]; then
+  script/deploy "$ref" ${DEPLOY_IMAGE:+--image "$DEPLOY_IMAGE"}
+  exit $?
+fi
+
+# Legacy recipes for projects without script/deploy; remove each as its project adopts the scripts.
 case "$project" in
   algo)
     # Pinchy is intentionally deployed on bee. Its updater requires the exact
@@ -140,7 +151,9 @@ case "$project" in
     exit 4
     ;;
   telemetry)
-    # Config-only stack: the project's updater moves the checkout to the commit, recreates the stack, waits for
+    # TRANSITION ONLY: the checkout on the host is still the commit before script/ existed, so the first deploy of the
+    # commit that adds script/ (telemetry PR #13) needs this recipe; it removes update.sh/status.sh, so the status call
+    # below warns once. Delete this branch after that deploy. Config-only stack: the project's updater moves the checkout to the commit, recreates the stack, waits for
     # Grafana to be healthy and rolls back itself on failure. A stack that was stopped on purpose stays stopped.
     rc=0
     ./update.sh "$ref" || rc=1

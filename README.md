@@ -22,8 +22,9 @@ Call it from a project's CI workflow, gated on that project's own test jobs:
 
 ## host/deploy.sh
 
-The script installed at `~/services/deploy.sh` on the host. It holds one recipe
-per project; add a `case` branch for a new project. The workflow does not copy
+The script installed at `~/services/deploy.sh` on the host. If the project has an executable `script/deploy`, it runs
+that (`script/deploy <commit> [--image <image>]`, the image taken from `DEPLOY_IMAGE`); otherwise it falls back to a
+legacy per-project recipe (a `case` branch), which is removed as each project adopts the standard scripts. The workflow does not copy
 it to the host: after changing it here, install it by hand.
 
 ```sh
@@ -167,3 +168,13 @@ branch has no `.github/workflows`, so there is no existing CI workload to move.
 
 References: [GitHub artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data),
 [Docker Actions cache](https://docs.docker.com/build/ci/github-actions/cache/).
+
+## strta/ — standard project scripts (JAY-147)
+
+Reference implementation of the `script/` entry points every project exposes (`bootstrap`, `setup`, `update`,
+`deploy`, `status`, `test`) with `script/ext/<hook>` customization. Copy `strta/script/` into a project as
+`script/`. Contracts, exit codes and hook list: `infrastructure/project-scripts-standard.md` in the knowledge base.
+
+```sh
+sh strta/tests/run.sh
+```

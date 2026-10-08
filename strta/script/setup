@@ -1,0 +1,29 @@
+#!/bin/sh
+# script/setup - take a fresh clone to a working state. Safe to re-run.
+# Runs bootstrap, creates the env file from a template if absent, then the project's setup.
+# Hooks: pre-setup, setup (build images, create/migrate the database), post-setup.
+set -eu
+. "$(dirname "$0")/lib/strta.sh"
+
+case ${1:-} in
+  -h|--help) printf 'usage: script/setup\n\nBootstrap, create %s from a template if missing, build and migrate. Safe to re-run.\n' "$ENV_FILE"; exit 0 ;;
+  '') ;;
+  *) usage_error "unexpected argument: $1" ;;
+esac
+
+"$STRTA_ROOT/script/bootstrap" || exit "$?"
+run_hook pre-setup || die "$STRTA_EXIT_FAIL" "pre-setup hook failed"
+
+if [ ! -e "$ENV_FILE" ]; then
+  for template in "$STRTA_ROOT/.env.example" "$STRTA_ROOT/.env.template"; do
+    if [ -f "$template" ]; then
+      as_owner cp "$template" "$ENV_FILE" && as_owner chmod 600 "$ENV_FILE"
+      log "created $ENV_FILE from $(basename "$template"); fill in the values (never commit it)"
+      break
+    fi
+  done
+fi
+
+run_hook setup || die "$STRTA_EXIT_FAIL" "setup hook failed"
+run_hook post-setup || die "$STRTA_EXIT_FAIL" "post-setup hook failed"
+log "done"

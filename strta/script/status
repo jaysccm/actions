@@ -1,0 +1,43 @@
+#!/bin/sh
+# script/status - print the deployed state; exit non-zero if unhealthy.
+#   script/status [--json]
+# Prints commit, runs the project's status hook, and always checks that compose services declare a restart policy
+# (restart: unless-stopped or always) so a host reboot does not leave them down.
+# Exit: 0 healthy, 4 unhealthy, 2 usage. Hook: status (exit non-zero if unhealthy).
+set -u
+. "$(dirname "$0")/lib/strta.sh"
+
+json=0
+case ${1:-} in
+  -h|--help) printf 'usage: script/status [--json]\n\nExit 0 healthy, 4 unhealthy.\n'; exit 0 ;;
+  --json) json=1 ;;
+  '') ;;
+  *) usage_error "unexpected argument: $1" ;;
+esac
+
+commit=$(as_owner git -C "$STRTA_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+problems=""
+
+if has_hook status; then
+  run_hook status || problems="$problems status-hook"
+fi
+
+compose=""
+for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+  [ -f "$STRTA_ROOT/$f" ] && compose=$STRTA_ROOT/$f && break
+done
+if [ -n "$compose" ]; then
+  # Long-running services need a restart policy; one-shot jobs may opt out with a "strta.oneshot" label.
+  if ! grep -Eq '^[[:space:]]*restart:[[:space:]]*"?(unless-stopped|always)"?' "$compose"; then
+    problems="$problems no-restart-policy"
+    warn "$(basename "$compose") has no 'restart: unless-stopped' (or always)"
+  fi
+fi
+
+if [ "$json" = 1 ]; then
+  if [ -z "$problems" ]; then healthy=true; else healthy=false; fi
+  printf '{"project":"%s","commit":"%s","healthy":%s,"problems":"%s"}\n' "$PROJECT" "$commit" "$healthy" "${problems# }"
+else
+  log "project=$PROJECT commit=$commit ${problems:+problems:$problems}"
+fi
+[ -z "$problems" ] || exit "$STRTA_EXIT_UNHEALTHY"

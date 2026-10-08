@@ -1,0 +1,78 @@
+#!/bin/sh
+# script/update - bring an existing checkout to a ref or a prebuilt image, then restart and verify.
+#   script/update [--ref <ref>] [--image <image>] [--wait <seconds>]
+# Order: preflight, move checkout, pre-update, apply (build/migrate/restart), verify, post-update.
+# On failure: run the rollback hook (or restore the previous commit and re-apply) and exit 1.
+# Hooks: pre-update, apply, verify, rollback, post-update. Safe to run again.
+# A project with its own self-contained updater (it moves the checkout, rolls back and restores jobs itself) provides
+# script/ext/update instead: after the preflight the standard runs pre-update, that hook, then post-update, and does
+# not move the checkout, run apply/verify or roll back. The hook gets REF as a full commit id.
+# Never builds when --image/DEPLOY_IMAGE is given; the apply hook must use $DEPLOY_IMAGE.
+set -eu
+. "$(dirname "$0")/lib/strta.sh"
+
+wait_secs=${STRTA_WAIT:-180}
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help)
+      printf 'usage: script/update [--ref <ref>] [--image <image>] [--wait <seconds>]\n\nMove to <ref> (default: current checkout), apply, verify health, roll back on failure.\nExit: 0 ok, 1 step failed (rolled back), 2 preflight/usage, 3 locked.\n'
+      exit 0 ;;
+    --ref) [ $# -ge 2 ] || usage_error "--ref needs a value"; REF=$2; shift 2 ;;
+    --image) [ $# -ge 2 ] || usage_error "--image needs a value"; DEPLOY_IMAGE=$2; shift 2 ;;
+    --wait) [ $# -ge 2 ] || usage_error "--wait needs a value"; wait_secs=$2; shift 2 ;;
+    *) usage_error "unexpected argument: $1" ;;
+  esac
+done
+case $wait_secs in ''|*[!0-9]*) usage_error "--wait must be a whole number of seconds" ;; esac
+export REF DEPLOY_IMAGE
+
+lock update
+
+# Preflight: nothing has changed if this fails.
+cd "$STRTA_ROOT"
+as_owner git rev-parse --git-dir >/dev/null 2>&1 || die "$STRTA_EXIT_USAGE" "$STRTA_ROOT is not a git checkout"
+[ -z "$(as_owner git status --porcelain --untracked-files=no)" ] || die "$STRTA_EXIT_USAGE" "checkout has uncommitted changes; refusing"
+PREVIOUS_REF=$(as_owner git rev-parse HEAD)
+export PREVIOUS_REF
+target=$PREVIOUS_REF
+if [ -n "$REF" ]; then
+  as_owner git fetch --quiet origin 2>/dev/null || warn "git fetch failed; using refs already present"
+  target=$(as_owner git rev-parse --verify "${REF}^{commit}" 2>/dev/null) || die "$STRTA_EXIT_USAGE" "cannot resolve ref '$REF'"
+fi
+export REF=$target
+
+rollback() {
+  warn "rolling back to $(printf %s "$PREVIOUS_REF" | cut -c1-7)"
+  if has_hook rollback; then
+    run_hook rollback || warn "rollback hook failed; the deployment may be inconsistent"
+  else
+    as_owner git checkout --quiet --detach "$PREVIOUS_REF" || { warn "could not restore the previous commit"; return; }
+    run_hook apply || warn "re-applying the previous version failed"
+  fi
+}
+
+failed() { warn "failed at step: $1"; rollback; exit "$STRTA_EXIT_FAIL"; }
+
+if has_hook update; then
+  run_hook pre-update || die "$STRTA_EXIT_FAIL" "pre-update hook failed; nothing was changed"
+  run_hook update || die "$STRTA_EXIT_FAIL" "update hook failed (it restores the previous version itself)"
+  run_hook post-update || die "$STRTA_EXIT_FAIL" "post-update hook failed (the update itself succeeded)"
+  log "updated to $(printf %s "$target" | cut -c1-7)"
+  exit 0
+fi
+
+if [ "$target" != "$PREVIOUS_REF" ]; then
+  as_owner git checkout --quiet --detach "$target" || die "$STRTA_EXIT_FAIL" "git checkout $target failed"
+  log "checkout: $(printf %s "$PREVIOUS_REF" | cut -c1-7) -> $(printf %s "$target" | cut -c1-7)"
+else
+  log "already at $(printf %s "$target" | cut -c1-7); re-applying"
+fi
+
+run_hook pre-update || failed pre-update
+run_hook apply || failed apply
+if has_hook verify; then
+  export STRTA_WAIT=$wait_secs
+  run_hook verify || failed "verify (health, waited up to ${wait_secs}s)"
+fi
+run_hook post-update || warn "post-update hook failed (the update itself succeeded)"
+log "updated to $(printf %s "$target" | cut -c1-7)"

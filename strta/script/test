@@ -1,0 +1,9 @@
+#!/bin/sh
+# script/test - run the project's tests; what CI calls. Hook: test (the project's test command).
+set -eu
+. "$(dirname "$0")/lib/strta.sh"
+case ${1:-} in
+  -h|--help) printf 'usage: script/test [args passed to the test hook]\n'; exit 0 ;;
+esac
+has_hook test || die "$STRTA_EXIT_USAGE" "no script/ext/test hook: this project defines no tests"
+exec "$STRTA_ROOT/script/ext/test" "$@"
