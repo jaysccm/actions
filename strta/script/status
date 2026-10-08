@@ -15,7 +15,7 @@ case ${1:-} in
   *) usage_error "unexpected argument: $1" ;;
 esac
 
-commit=$(git -C "$STRTA_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+commit=$(as_owner git -C "$STRTA_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
 problems=""
 
 if has_hook status; then

@@ -107,6 +107,21 @@ git -C "$p" checkout -q --detach HEAD~1
 expect "custom rollback hook is used" 1 "$p/script/update" --ref "$other" --wait 1
 [ -f "$p/rb.log" ] && ok "rollback hook ran" || bad "rollback hook ran"
 
+# --- STRTA_AS: git and env-file writes go through the owner prefix, hooks do not --------
+p=$(new_project owner)
+printf '#!/bin/sh\necho "$@" >> %s/as.log\nexec "$@"\n' "$work" > "$work/asshim"; chmod +x "$work/asshim"
+printf 'STRTA_AS=%s\n' "$work/asshim" > "$p/script/ext/env"
+hook "$p" apply 'echo "apply-ran" >> '"$p"'/apply.log'
+echo 'K=' > "$p/.env.example"
+git -C "$p" add -A; git -C "$p" commit -qm hooks; rm -f "$work/as.log"
+tgt=$(versioned "$p" two)
+expect "update works with STRTA_AS set" 0 "$p/script/update" --ref HEAD~1
+grep -q '^git checkout' "$work/as.log" && grep -q '^git rev-parse' "$work/as.log" && grep -q '^git status' "$work/as.log" && ok "git calls went through STRTA_AS" || bad "git calls went through STRTA_AS"
+! grep -q 'apply' "$work/as.log" && ok "hooks were not run through STRTA_AS" || bad "hooks were not run through STRTA_AS"
+expect "setup creates env via STRTA_AS" 0 "$p/script/setup"
+grep -q '^cp ' "$work/as.log" && ok "env file creation went through STRTA_AS" || bad "env file creation went through STRTA_AS"
+expect "status works with STRTA_AS" 0 "$p/script/status"
+
 # --- locking ------------------------------------------------------------------
 p=$(new_project lock); hook "$p" apply 'sleep 3'; git -C "$p" add -A && git -C "$p" commit -qm hook
 "$p/script/update" >/dev/null 2>&1 & holder=$!

@@ -27,14 +27,14 @@ lock update
 
 # Preflight: nothing has changed if this fails.
 cd "$STRTA_ROOT"
-git rev-parse --git-dir >/dev/null 2>&1 || die "$STRTA_EXIT_USAGE" "$STRTA_ROOT is not a git checkout"
-[ -z "$(git status --porcelain --untracked-files=no)" ] || die "$STRTA_EXIT_USAGE" "checkout has uncommitted changes; refusing"
-PREVIOUS_REF=$(git rev-parse HEAD)
+as_owner git rev-parse --git-dir >/dev/null 2>&1 || die "$STRTA_EXIT_USAGE" "$STRTA_ROOT is not a git checkout"
+[ -z "$(as_owner git status --porcelain --untracked-files=no)" ] || die "$STRTA_EXIT_USAGE" "checkout has uncommitted changes; refusing"
+PREVIOUS_REF=$(as_owner git rev-parse HEAD)
 export PREVIOUS_REF
 target=$PREVIOUS_REF
 if [ -n "$REF" ]; then
-  git fetch --quiet origin 2>/dev/null || warn "git fetch failed; using refs already present"
-  target=$(git rev-parse --verify "${REF}^{commit}" 2>/dev/null) || die "$STRTA_EXIT_USAGE" "cannot resolve ref '$REF'"
+  as_owner git fetch --quiet origin 2>/dev/null || warn "git fetch failed; using refs already present"
+  target=$(as_owner git rev-parse --verify "${REF}^{commit}" 2>/dev/null) || die "$STRTA_EXIT_USAGE" "cannot resolve ref '$REF'"
 fi
 export REF=$target
 
@@ -43,7 +43,7 @@ rollback() {
   if has_hook rollback; then
     run_hook rollback || warn "rollback hook failed; the deployment may be inconsistent"
   else
-    git checkout --quiet --detach "$PREVIOUS_REF" || { warn "could not restore the previous commit"; return; }
+    as_owner git checkout --quiet --detach "$PREVIOUS_REF" || { warn "could not restore the previous commit"; return; }
     run_hook apply || warn "re-applying the previous version failed"
   fi
 }
@@ -51,7 +51,7 @@ rollback() {
 failed() { warn "failed at step: $1"; rollback; exit "$STRTA_EXIT_FAIL"; }
 
 if [ "$target" != "$PREVIOUS_REF" ]; then
-  git checkout --quiet --detach "$target" || die "$STRTA_EXIT_FAIL" "git checkout $target failed"
+  as_owner git checkout --quiet --detach "$target" || die "$STRTA_EXIT_FAIL" "git checkout $target failed"
   log "checkout: $(printf %s "$PREVIOUS_REF" | cut -c1-7) -> $(printf %s "$target" | cut -c1-7)"
 else
   log "already at $(printf %s "$target" | cut -c1-7); re-applying"

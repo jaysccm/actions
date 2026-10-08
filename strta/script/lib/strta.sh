@@ -16,6 +16,7 @@
 #   DEPLOY_IMAGE  prebuilt image to run instead of building (update/deploy), else empty
 #   ENV_FILE      path to the gitignored env file (default: <root>/.env)
 #   STRTA_STEP    the standard script that is running the hook
+#   STRTA_AS      optional command prefix (e.g. 'sudo -u owner -H') for writing to the checkout; set in script/ext/env
 #   STRTA_WAIT    seconds the verify hook may wait for health (update only; default 180)
 
 STRTA_EXIT_FAIL=1
@@ -30,7 +31,17 @@ ENV_FILE=${ENV_FILE:-$STRTA_ROOT/.env}
 REF=${REF:-}
 PREVIOUS_REF=${PREVIOUS_REF:-}
 DEPLOY_IMAGE=${DEPLOY_IMAGE:-}
+STRTA_AS=${STRTA_AS:-}
+
+# Optional project settings. script/ext/env is sourced (not run as a hook) and may set PROJECT, INSTANCE, ENV_FILE
+# and STRTA_AS, e.g. STRTA_AS='sudo -u pearl -H' when the checkout belongs to another user.
+# shellcheck disable=SC1091
+[ -f "$STRTA_ROOT/script/ext/env" ] && . "$STRTA_ROOT/script/ext/env"
 export PROJECT INSTANCE ENV_FILE REF PREVIOUS_REF DEPLOY_IMAGE
+
+# as_owner <command...>: run a command that reads or writes the checkout as its owner (see STRTA_AS).
+# The standard scripts use it for every git call and for creating the env file; hooks run as the invoking user.
+as_owner() { if [ -n "$STRTA_AS" ]; then $STRTA_AS "$@"; else "$@"; fi; }
 
 log() { printf '%s: %s\n' "$(basename "$0")" "$*"; }
 warn() { printf '%s: warning: %s\n' "$(basename "$0")" "$*" >&2; }

@@ -17,7 +17,7 @@ run_hook pre-setup || die "$STRTA_EXIT_FAIL" "pre-setup hook failed"
 if [ ! -e "$ENV_FILE" ]; then
   for template in "$STRTA_ROOT/.env.example" "$STRTA_ROOT/.env.template"; do
     if [ -f "$template" ]; then
-      cp "$template" "$ENV_FILE" && chmod 600 "$ENV_FILE"
+      as_owner cp "$template" "$ENV_FILE" && as_owner chmod 600 "$ENV_FILE"
       log "created $ENV_FILE from $(basename "$template"); fill in the values (never commit it)"
       break
     fi
