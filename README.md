@@ -22,8 +22,9 @@ Call it from a project's CI workflow, gated on that project's own test jobs:
 
 ## host/deploy.sh
 
-The script installed at `~/services/deploy.sh` on the host. It holds one recipe
-per project; add a `case` branch for a new project. The workflow does not copy
+The script installed at `~/services/deploy.sh` on the host. If the project has an executable `script/deploy`, it runs
+that (`script/deploy <commit> [--image <image>]`, the image taken from `DEPLOY_IMAGE`); otherwise it falls back to a
+legacy per-project recipe (a `case` branch), which is removed as each project adopts the standard scripts. The workflow does not copy
 it to the host: after changing it here, install it by hand.
 
 ```sh
