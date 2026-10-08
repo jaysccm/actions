@@ -4,6 +4,9 @@
 # Order: preflight, move checkout, pre-update, apply (build/migrate/restart), verify, post-update.
 # On failure: run the rollback hook (or restore the previous commit and re-apply) and exit 1.
 # Hooks: pre-update, apply, verify, rollback, post-update. Safe to run again.
+# A project with its own self-contained updater (it moves the checkout, rolls back and restores jobs itself) provides
+# script/ext/update instead: after the preflight the standard runs pre-update, that hook, then post-update, and does
+# not move the checkout, run apply/verify or roll back. The hook gets REF as a full commit id.
 # Never builds when --image/DEPLOY_IMAGE is given; the apply hook must use $DEPLOY_IMAGE.
 set -eu
 . "$(dirname "$0")/lib/strta.sh"
@@ -49,6 +52,14 @@ rollback() {
 }
 
 failed() { warn "failed at step: $1"; rollback; exit "$STRTA_EXIT_FAIL"; }
+
+if has_hook update; then
+  run_hook pre-update || die "$STRTA_EXIT_FAIL" "pre-update hook failed; nothing was changed"
+  run_hook update || die "$STRTA_EXIT_FAIL" "update hook failed (it restores the previous version itself)"
+  run_hook post-update || die "$STRTA_EXIT_FAIL" "post-update hook failed (the update itself succeeded)"
+  log "updated to $(printf %s "$target" | cut -c1-7)"
+  exit 0
+fi
 
 if [ "$target" != "$PREVIOUS_REF" ]; then
   as_owner git checkout --quiet --detach "$target" || die "$STRTA_EXIT_FAIL" "git checkout $target failed"

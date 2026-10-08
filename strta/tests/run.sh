@@ -107,6 +107,20 @@ git -C "$p" checkout -q --detach HEAD~1
 expect "custom rollback hook is used" 1 "$p/script/update" --ref "$other" --wait 1
 [ -f "$p/rb.log" ] && ok "rollback hook ran" || bad "rollback hook ran"
 
+# --- ext/update takes over -----------------------------------------------------
+p=$(new_project takeover)
+hook "$p" update 'echo "owner-ran ref=$REF prev=$PREVIOUS_REF head=$(git -C '"$p"' rev-parse HEAD)" >> '"$p"'/owner.log'
+hook "$p" apply 'echo apply-ran >> '"$p"'/owner.log'
+hook "$p" pre-update 'echo pre >> '"$p"'/owner.log'
+git -C "$p" add -A; git -C "$p" commit -qm hooks
+cur=$(git -C "$p" rev-parse HEAD); tgt=$(versioned "$p" two); git -C "$p" checkout -q --detach "$cur"
+expect "update hook takes over" 0 "$p/script/update" --ref "$tgt"
+grep -q "owner-ran ref=$tgt prev=$cur head=$cur" "$p/owner.log" && ok "hook gets the full REF and the checkout is not moved by the standard" || bad "hook gets the full REF and the checkout is not moved"
+grep -q apply-ran "$p/owner.log" && bad "apply must not run when update exists" || ok "apply does not run when update exists"
+[ "$(head -1 "$p/owner.log")" = pre ] && ok "pre-update runs first" || bad "pre-update runs first"
+hook "$p" update 'exit 5'; git -C "$p" add -A; git -C "$p" commit -qm failing
+expect "failing update hook exits 1" 1 "$p/script/update" --ref HEAD
+
 # --- STRTA_AS: git and env-file writes go through the owner prefix, hooks do not --------
 p=$(new_project owner)
 printf '#!/bin/sh\necho "$@" >> %s/as.log\nexec "$@"\n' "$work" > "$work/asshim"; chmod +x "$work/asshim"
