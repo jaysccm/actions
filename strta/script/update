@@ -8,7 +8,7 @@
 set -eu
 . "$(dirname "$0")/lib/strta.sh"
 
-wait_secs=${STRTA_WAIT:-120}
+wait_secs=${STRTA_WAIT:-180}
 while [ $# -gt 0 ]; do
   case $1 in
     -h|--help)
@@ -60,7 +60,8 @@ fi
 run_hook pre-update || failed pre-update
 run_hook apply || failed apply
 if has_hook verify; then
-  STRTA_WAIT=$wait_secs run_hook verify || failed "verify (health, waited up to ${wait_secs}s)"
+  export STRTA_WAIT=$wait_secs
+  run_hook verify || failed "verify (health, waited up to ${wait_secs}s)"
 fi
 run_hook post-update || warn "post-update hook failed (the update itself succeeded)"
 log "updated to $(printf %s "$target" | cut -c1-7)"

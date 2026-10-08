@@ -1,7 +1,7 @@
 #!/bin/sh
 # script/status - print the deployed state; exit non-zero if unhealthy.
 #   script/status [--json]
-# Prints commit, then runs the project's status hook. Checks that compose services declare a restart policy
+# Prints commit, runs the project's status hook, and always checks that compose services declare a restart policy
 # (restart: unless-stopped or always) so a host reboot does not leave them down.
 # Exit: 0 healthy, 4 unhealthy, 2 usage. Hook: status (exit non-zero if unhealthy).
 set -u
@@ -26,7 +26,7 @@ compose=""
 for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
   [ -f "$STRTA_ROOT/$f" ] && compose=$STRTA_ROOT/$f && break
 done
-if [ -n "$compose" ] && ! has_hook status; then
+if [ -n "$compose" ]; then
   # Long-running services need a restart policy; one-shot jobs may opt out with a "strta.oneshot" label.
   if ! grep -Eq '^[[:space:]]*restart:[[:space:]]*"?(unless-stopped|always)"?' "$compose"; then
     problems="$problems no-restart-policy"

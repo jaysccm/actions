@@ -16,6 +16,7 @@
 #   DEPLOY_IMAGE  prebuilt image to run instead of building (update/deploy), else empty
 #   ENV_FILE      path to the gitignored env file (default: <root>/.env)
 #   STRTA_STEP    the standard script that is running the hook
+#   STRTA_WAIT    seconds the verify hook may wait for health (update only; default 180)
 
 STRTA_EXIT_FAIL=1
 STRTA_EXIT_USAGE=2
