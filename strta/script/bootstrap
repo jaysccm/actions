@@ -1,0 +1,17 @@
+#!/bin/sh
+# script/bootstrap - install host-level dependencies (Docker, task runner, toolchain).
+# Idempotent. Needs no secrets and starts no services.
+# Hooks: pre-bootstrap, bootstrap (the project's installs), post-bootstrap.
+set -eu
+. "$(dirname "$0")/lib/strta.sh"
+
+case ${1:-} in
+  -h|--help) printf 'usage: script/bootstrap\n\nInstall host-level dependencies. Safe to re-run. Hooks: pre-bootstrap, bootstrap, post-bootstrap.\n'; exit 0 ;;
+  '') ;;
+  *) usage_error "unexpected argument: $1" ;;
+esac
+
+run_hook pre-bootstrap || die "$STRTA_EXIT_FAIL" "pre-bootstrap hook failed"
+run_hook bootstrap || die "$STRTA_EXIT_FAIL" "bootstrap hook failed"
+run_hook post-bootstrap || die "$STRTA_EXIT_FAIL" "post-bootstrap hook failed"
+log "done"

@@ -167,3 +167,13 @@ branch has no `.github/workflows`, so there is no existing CI workload to move.
 
 References: [GitHub artifacts](https://docs.github.com/en/actions/tutorials/store-and-share-data),
 [Docker Actions cache](https://docs.docker.com/build/ci/github-actions/cache/).
+
+## strta/ — standard project scripts (JAY-147)
+
+Reference implementation of the `script/` entry points every project exposes (`bootstrap`, `setup`, `update`,
+`deploy`, `status`, `test`) with `script/ext/<hook>` customization. Copy `strta/script/` into a project as
+`script/`. Contracts, exit codes and hook list: `infrastructure/project-scripts-standard.md` in the knowledge base.
+
+```sh
+sh strta/tests/run.sh
+```

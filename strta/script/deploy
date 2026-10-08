@@ -1,0 +1,19 @@
+#!/bin/sh
+# script/deploy - the host entry point the shared workflow and host/deploy.sh call.
+#   script/deploy <ref> [--image <image>] [--wait <seconds>]
+# Wraps update with a pre-deploy check, the post-deploy hook, and a status report. The ref is required: a
+# deploy is always of a named, tested version. Exit codes are update's, plus 1 if the final status is unhealthy.
+# Hooks: pre-deploy, post-deploy (plus everything update runs).
+set -eu
+. "$(dirname "$0")/lib/strta.sh"
+
+case ${1:-} in
+  -h|--help) printf 'usage: script/deploy <ref> [--image <image>] [--wait <seconds>]\n\nDeploy a named version: pre-deploy, update, post-deploy, status.\n'; exit 0 ;;
+  ''|-*) usage_error "a ref is required: script/deploy <ref> [--image <image>]" ;;
+esac
+ref=$1; shift
+
+run_hook pre-deploy || die "$STRTA_EXIT_USAGE" "pre-deploy check failed; nothing was changed"
+"$STRTA_ROOT/script/update" --ref "$ref" "$@" || exit "$?"
+run_hook post-deploy || { warn "post-deploy hook failed"; exit "$STRTA_EXIT_FAIL"; }
+"$STRTA_ROOT/script/status" || { warn "deployed, but status reports problems"; exit "$STRTA_EXIT_FAIL"; }
