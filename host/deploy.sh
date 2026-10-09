@@ -110,6 +110,21 @@ case "$project" in
       echo "algo requires a verified release image and its expected image ID" >&2
       exit 4
     fi
+    # TRANSITION ONLY (JAY-147): the checkout being left still has the updater that refuses a stack that is not fully
+    # running, and the stacks may be down (a reboot before the restart policy existed). Converge them on the current
+    # release first. Gone with this recipe once the checkout has script/deploy, whose updater does this itself.
+    cur=$(cat .release-image 2>/dev/null || true)
+    case "$cur" in
+      algo:[0-9a-f]*)
+        for inst in live paper; do
+          pc=(env DEPLOY_IMAGE="$cur" COMPOSE_FILE="$PWD/docker-compose.yml:$PWD/compose.release.yml"
+              docker compose -p "pinchy-$inst" --env-file "instances/$inst.env")
+          if [ "$("${pc[@]}" ps --status running --services | sort | tr '\n' ' ')" != "dashboard db trading " ]; then
+            echo "algo: bringing the $inst stack up on $cur before updating"
+            "${pc[@]}" up -d --no-build --pull never db trading dashboard || exit 1
+          fi
+        done ;;
+    esac
     rc=0
     python3 scripts/update.py "$ref" --expected-image-id "$EXPECTED_IMAGE_ID" || rc=1
     python3 scripts/status.py ||
